@@ -1,0 +1,268 @@
+
+# IMPORT
+
+```{r}
+
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(readxl)
+
+grouper <- function(input_df, group_by_column, new_column_name = "n()"){
+  output_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    summarise(temp_count = n()) %>%
+    mutate(percent = temp_count/sum(temp_count)*100) %>%
+    arrange(desc(percent)) %>%
+    rename(!!new_column_name := temp_count)
+  return(output_df)
+}
+
+group_count <- function(input_df, group_column_name='n()', state_filter=NA, start_col = 1){
+  column_names <- colnames(input_df)
+  if(!is.na(state_filter)){
+    input_df <- input_df %>%
+      filter(state == state_filter)
+  }
+  for (column in column_names[start_col:length(column_names)]){
+    output <- grouper(input_df, column, group_column_name)
+    print(output)
+  }
+}
+
+round_df <- function(x, digits) {
+    # round all numeric variables
+    # x: data frame 
+    # digits: number of digits to round
+    numeric_columns <- sapply(x, mode) == 'numeric'
+    x[numeric_columns] <-  round(x[numeric_columns], digits)
+    x
+}
+
+```
+
+```{r}
+
+#this code shows how the original was cleaned before unstructured text responses were classified
+
+convert_column_to_logical <- function(input_df, column_name) {
+  column_name <- enquo(column_name)
+  
+  output_df <- input_df %>%
+    mutate({{ column_name }} := case_when(
+      {{ column_name }} == "X" ~ TRUE,
+      is.na({{ column_name }}) ~ FALSE
+    ))
+  
+  return(output_df)
+}
+
+survey <- read_excel("data/permits_survey results.xlsx")
+
+col_names <- paste(survey[1, ], survey[2, ], sep = "_")
+
+col_names <- gsub("NA", "", col_names)
+
+survey <- survey %>%
+  set_names(col_names) %>%
+  clean_names() %>%
+  slice(3:nrow(survey)) %>%
+  select(-submission_details_submitted_time) %>%
+  rename(property_owner = are_you_a_property_owner_contractor_or_professional_permit_processor_property_owner) %>%
+  convert_column_to_logical(property_owner) %>%
+  convert_column_to_logical(contractor) %>%
+  convert_column_to_logical(professional_permit_processor) %>%
+  mutate(overall_experience_obtaining_a_permit = case_when(
+    how_would_you_rate_your_overall_experience_obtaining_a_permit_from_the_city_of_baltimore_very_easy == "X" ~ "very easy",
+    easy == "X" ~ "easy",
+    somewhat_difficult == "X" ~ "somewhat difficult",
+    difficult == "X" ~ "difficult",
+    very_difficult == "X" ~ "very difficult"
+  )) %>%
+  select(-c(how_would_you_rate_your_overall_experience_obtaining_a_permit_from_the_city_of_baltimore_very_easy, easy, somewhat_difficult, difficult, very_difficult)) %>%
+  relocate(property_owner, contractor, professional_permit_processor, overall_experience_obtaining_a_permit) %>%
+  rename(use_permit = what_type_of_work_were_you_seeking_a_permit_to_perform_what_permit_service_did_you_apply_check_all_that_apply_use_permit) %>%
+  convert_column_to_logical(use_permit) %>%
+  convert_column_to_logical(demo_permit) %>%
+  convert_column_to_logical(construction_permit_building_inspection) %>%
+  convert_column_to_logical(construction_permit_construction) %>%
+  convert_column_to_logical(construction_permit_encroachment_plan_planning) %>%
+  convert_column_to_logical(construction_permit_encroachment_plan_fire) %>%
+  convert_column_to_logical(construction_permit_permit_extensions) %>%
+  convert_column_to_logical(construction_permit_demolition) %>%
+  convert_column_to_logical(construction_permit_electrical) %>%
+  convert_column_to_logical(construction_permit_gas_hvac) %>%
+  mutate(were_you_aware_that_dhcd_provides_online_tutorials_and_training_session_on_the_permitting_process = case_when(
+    were_you_aware_that_dhcd_provides_online_tutorials_and_training_session_on_the_permitting_process_yes == "X" ~ "yes",
+    no == "X" ~ "no"
+  )) %>%
+  select(-c(were_you_aware_that_dhcd_provides_online_tutorials_and_training_session_on_the_permitting_process_yes, no)) %>%
+  mutate(have_you_ever_utilized_an_of_the_online_tutorials_available_on_the_dhcd_website_to_assist_in_obtaining_your_permit = case_when(
+    	have_you_ever_utilized_an_of_the_online_tutorials_available_on_the_dhcd_website_to_assist_in_obtaining_your_permit_yes == "X" ~ "yes",
+    	no_2 == "X" ~ "no"
+  )) %>%
+  select(-c(have_you_ever_utilized_an_of_the_online_tutorials_available_on_the_dhcd_website_to_assist_in_obtaining_your_permit_yes, no_2
+)) %>%
+  unique() %>%
+  mutate(row_id = row_number()) %>%
+  relocate(row_id) 
+
+```
+
+
+
+```{r}
+
+#this version includes manual classification by the baltimore banner
+survey <- read_csv("data/clean-survey.csv")
+
+```
+# FACTCHECK
+
+## "Not all reviews were negative, but nearly four out of every five respondents said the process was difficult."
+
+```{r}
+
+glimpse(survey)
+
+t <- survey %>%
+  mutate(difficult = case_when(
+    str_detect(overall_experience_obtaining_a_permit, "difficult") ~ TRUE,
+    TRUE ~ FALSE
+  )) %>%
+  group_by(difficult) %>%
+  count()
+
+t %>%
+  mutate(perc = n/sum(t$n))
+
+```
+
+## "More than one in three said it was very difficult."
+
+```{r}
+
+grouper(survey, "overall_experience_obtaining_a_permit")
+
+```
+
+## "More than a third of survey respondents said it took longer than 60 days to get their permit approved or denied."
+
+```{r}
+
+grouper(survey, "approximately_how_long_did_it_take_from_the_time_you_applied_for_your_permit_to_receiving_an_approval_or_denial")
+
+```
+
+## "Getting encroachment plan permits — which authorize work on city and state-owned land — take the longest."
+
+```{r}
+
+use_permit <- survey %>%
+  filter(use_permit == TRUE)
+
+demo_permit <- survey %>%
+  filter(demo_permit == TRUE)
+
+construction_permit_building_inspection <- survey %>%
+  filter(construction_permit_building_inspection == TRUE)
+
+construction_permit_construction <- survey %>%
+  filter(construction_permit_construction == TRUE)
+
+construction_permit_encroachment_plan_fire <- survey %>%
+  filter(construction_permit_encroachment_plan_fire == TRUE)
+
+construction_permit_encroachment_plan_planning <- survey %>%
+  filter(construction_permit_encroachment_plan_planning == TRUE)
+
+construction_permit_permit_extensions <- survey %>%
+  filter(construction_permit_permit_extensions == TRUE)
+
+construction_permit_demolition <- survey %>%
+  filter(construction_permit_demolition == TRUE)
+
+construction_permit_electrical <- survey %>%
+  filter(construction_permit_electrical == TRUE)
+
+construction_permit_gas_hvac <- survey %>%
+  filter(construction_permit_gas_hvac == TRUE)
+
+calc_and_pivot_df <- function(party, group_by_column){
+  
+  input_df <- eval(parse(text = party))
+  
+  temp_input_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    count() %>%
+    ungroup()
+
+  raw_input_df <- temp_input_df %>%
+    pivot_wider(values_from = n, names_from = .data[[group_by_column]]) %>%
+    mutate(party = party,
+           type = "raw") %>%
+    relocate(party, type)
+  
+  perc_input_df <- temp_input_df  %>%
+    mutate(percent = (n/sum(n))*100) %>%
+    select(-n) %>%
+    pivot_wider(values_from = percent, names_from = .data[[group_by_column]]) %>%
+    mutate(party = party,
+           type = "perc") %>%
+    relocate(party, type)
+  
+  return(raw_input_df %>%
+    bind_rows(perc_input_df) %>%
+    clean_names())
+  
+}
+
+analyze_column_by_permit <- function(group_by_column, digits=1) {
+  
+  #group_by_column <- "approximately_how_long_did_it_take_from_the_time_you_applied_for_your_permit_to_receiving_an_approval_or_denial"
+  
+  t1 <- calc_and_pivot_df("use_permit", group_by_column)
+  t2 <- calc_and_pivot_df("demo_permit", group_by_column)
+  t4 <- calc_and_pivot_df('construction_permit_building_inspection', group_by_column)
+  t5 <- calc_and_pivot_df('construction_permit_construction', group_by_column)
+  t6 <- calc_and_pivot_df('construction_permit_encroachment_plan_fire', group_by_column)
+  t7 <- calc_and_pivot_df('construction_permit_encroachment_plan_planning', group_by_column)
+  t8 <- calc_and_pivot_df('construction_permit_permit_extensions', group_by_column)
+  t9 <- calc_and_pivot_df('construction_permit_demolition', group_by_column)
+  t10 <- calc_and_pivot_df('construction_permit_electrical', group_by_column)
+  t11 <- calc_and_pivot_df('construction_permit_gas_hvac', group_by_column)
+  
+  
+  output <- t1 %>%
+    bind_rows(t2, t4, t5, t6, t7, t8, t9, t10, t11)
+  
+  return(output %>%
+           round_df(digits))
+  
+}
+
+analyze_column_by_permit("approximately_how_long_did_it_take_from_the_time_you_applied_for_your_permit_to_receiving_an_approval_or_denial") %>%
+  filter(type == "raw") %>%
+  arrange(desc(greater_than_60_days))
+
+```
+
+## "About one-third of respondents specifically cited poor communication and long response times as the biggest challenges to getting permits."
+
+```{r}
+
+grouper(survey, "challenge_poor_communication_response_time")
+
+```
+
+## "More than 50 survey respondents said they had encountered “rude” city employees or received conflicting information."
+
+```{r}
+
+survey %>%
+  filter(challenge_conflicting_info == TRUE) %>%
+  bind_rows(survey %>%
+              filter(challenge_rude_difficult_staff == TRUE)) %>%
+  unique()
+
+```
